@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: realtime-translation-listen-along
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: 25
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: HOST
+        value: 0.0.0.0
+      - key: APP_PASSWORD
+        sync: false
+      - key: OPENAI_SAFETY_IDENTIFIER
+        sync: false
