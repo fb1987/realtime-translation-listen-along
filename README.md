@@ -8,6 +8,8 @@ Private mobile web app for one-way Chinese-to-English live audio translation wit
 - Mints a short-lived OpenAI Realtime Translation client secret from `/session`.
 - Sends the browser SDP offer to `https://api.openai.com/v1/realtime/translations/calls`.
 - Plays translated English audio through the browser audio route, including Bluetooth headphones selected at the OS level.
+- Lets the listener choose the target output language, with English as the default.
+- Can show translated captions from the Realtime Translation transcript deltas.
 - Keeps the OpenAI API key server-side only.
 - Tracks connection and first-audio timing in debug mode.
 

@@ -12,8 +12,25 @@ const host = process.env.HOST || (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const OPENAI_TRANSLATION_SECRET_URL =
   "https://api.openai.com/v1/realtime/translations/client_secrets";
 
-const CHINESE_ONLY_INSTRUCTIONS =
-  "Only translate Mandarin or Cantonese Chinese into English. If the detected speech is already English or not Chinese, return silence / no translated audio.";
+const SUPPORTED_TARGET_LANGUAGES = new Map([
+  ["en", "English"],
+  ["es", "Spanish"],
+  ["pt", "Portuguese"],
+  ["fr", "French"],
+  ["ja", "Japanese"],
+  ["ru", "Russian"],
+  ["zh", "Chinese"],
+  ["de", "German"],
+  ["ko", "Korean"],
+  ["hi", "Hindi"],
+  ["id", "Indonesian"],
+  ["vi", "Vietnamese"],
+  ["it", "Italian"],
+]);
+
+function buildChineseOnlyInstructions(targetLabel) {
+  return `Only translate Mandarin or Cantonese Chinese into ${targetLabel}. If the detected speech is already English or not Chinese, return silence / no translated audio.`;
+}
 
 const app = express();
 
@@ -39,17 +56,20 @@ function requireAppSecret(req, res, next) {
   res.status(401).json({ error: "Unauthorized" });
 }
 
-function buildTranslationSession({ withInstructions = true } = {}) {
+function buildTranslationSession({ targetLanguage, withInstructions = true }) {
+  const targetLabel = SUPPORTED_TARGET_LANGUAGES.get(targetLanguage);
+
   return {
     session: {
       model: "gpt-realtime-translate",
-      ...(withInstructions ? { instructions: CHINESE_ONLY_INSTRUCTIONS } : {}),
+      ...(withInstructions
+        ? { instructions: buildChineseOnlyInstructions(targetLabel) }
+        : {}),
       audio: {
         input: {
-          transcription: { model: "gpt-realtime-whisper" },
           noise_reduction: { type: "near_field" },
         },
-        output: { language: "en" },
+        output: { language: targetLanguage },
       },
     },
     expires_after: {
@@ -70,7 +90,7 @@ function parseOpenAISecret(data) {
   };
 }
 
-async function createTranslationSecret({ withInstructions }) {
+async function createTranslationSecret({ targetLanguage, withInstructions }) {
   if (!process.env.OPENAI_API_KEY) {
     return {
       ok: false,
@@ -88,7 +108,7 @@ async function createTranslationSecret({ withInstructions }) {
         ? { "OpenAI-Safety-Identifier": process.env.OPENAI_SAFETY_IDENTIFIER }
         : {}),
     },
-    body: JSON.stringify(buildTranslationSession({ withInstructions })),
+    body: JSON.stringify(buildTranslationSession({ targetLanguage, withInstructions })),
   });
 
   const text = await response.text();
@@ -109,17 +129,34 @@ app.get("/config", (_req, res) => {
   });
 });
 
-app.post("/session", requireAppSecret, async (_req, res) => {
+app.post("/session", requireAppSecret, async (req, res) => {
   try {
+    const targetLanguage =
+      typeof req.body?.targetLanguage === "string" ? req.body.targetLanguage : "en";
+
+    if (!SUPPORTED_TARGET_LANGUAGES.has(targetLanguage)) {
+      res.status(400).json({
+        error: `Unsupported target language: ${targetLanguage}`,
+        supported_languages: Array.from(SUPPORTED_TARGET_LANGUAGES.keys()),
+      });
+      return;
+    }
+
     let languageFilterMode = "session_instructions";
-    let openAIResponse = await createTranslationSecret({ withInstructions: true });
+    let openAIResponse = await createTranslationSecret({
+      targetLanguage,
+      withInstructions: true,
+    });
 
     if (!openAIResponse.ok && /instructions|unsupported|unknown/i.test(openAIResponse.text)) {
       // TODO: Add a deterministic Mandarin/Cantonese language-detection gate before WebRTC audio reaches OpenAI.
       // Realtime Translation currently may reject or ignore custom instructions, so we fall back to the
       // dedicated translation model's same-language suppression behavior rather than failing startup.
       languageFilterMode = "todo_language_detection_gate";
-      openAIResponse = await createTranslationSecret({ withInstructions: false });
+      openAIResponse = await createTranslationSecret({
+        targetLanguage,
+        withInstructions: false,
+      });
     }
 
     if (!openAIResponse.ok) {
@@ -131,7 +168,7 @@ app.post("/session", requireAppSecret, async (_req, res) => {
     res.json({
       ...parseOpenAISecret(data),
       language_filter_mode: languageFilterMode,
-      target_language: "en",
+      target_language: targetLanguage,
     });
   } catch (error) {
     console.error("Failed to create translation session", error);

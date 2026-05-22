@@ -12,7 +12,7 @@ type SessionResponse = {
   client_secret: string;
   expires_at?: number | null;
   language_filter_mode?: "session_instructions" | "todo_language_detection_gate";
-  target_language: "en";
+  target_language: string;
 };
 
 type Timings = {
@@ -30,6 +30,22 @@ type ConfigResponse = {
 const TRANSLATION_CALL_URL =
   "https://api.openai.com/v1/realtime/translations/calls";
 
+const TARGET_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "es", label: "Spanish" },
+  { code: "pt", label: "Portuguese" },
+  { code: "fr", label: "French" },
+  { code: "ja", label: "Japanese" },
+  { code: "ru", label: "Russian" },
+  { code: "zh", label: "Chinese" },
+  { code: "de", label: "German" },
+  { code: "ko", label: "Korean" },
+  { code: "hi", label: "Hindi" },
+  { code: "id", label: "Indonesian" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "it", label: "Italian" },
+];
+
 function nowMs() {
   return performance.now();
 }
@@ -44,6 +60,13 @@ function readStoredSecret() {
   return localStorage.getItem("translation_app_secret") ?? "";
 }
 
+function readStoredTargetLanguage() {
+  const stored = localStorage.getItem("translation_target_language");
+  return TARGET_LANGUAGES.some((language) => language.code === stored)
+    ? (stored ?? "en")
+    : "en";
+}
+
 export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -54,12 +77,17 @@ export default function App() {
   const firstAudioSeenRef = useRef(false);
   const reconnectingRef = useRef(false);
   const stopRequestedRef = useRef(false);
+  const captionDraftRef = useRef("");
 
   const [status, setStatus] = useState<Status>("Idle");
   const [error, setError] = useState("");
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(1);
   const [debug, setDebug] = useState(false);
+  const [captionsEnabled, setCaptionsEnabled] = useState(false);
+  const [targetLanguage, setTargetLanguage] = useState(readStoredTargetLanguage);
+  const [captionDraft, setCaptionDraft] = useState("");
+  const [captionLines, setCaptionLines] = useState<string[]>([]);
   const [timings, setTimings] = useState<Timings>({});
   const [events, setEvents] = useState<string[]>([]);
   const [authRequired, setAuthRequired] = useState(false);
@@ -67,6 +95,10 @@ export default function App() {
   const [languageFilterMode, setLanguageFilterMode] = useState<string>("");
 
   const active = status !== "Idle" && status !== "Error";
+  const targetLanguageLabel =
+    TARGET_LANGUAGES.find((language) => language.code === targetLanguage)?.label ??
+    "English";
+  const visibleCaptions = [...captionLines, captionDraft].filter(Boolean);
 
   const statusTone = useMemo(() => {
     if (status === "Error") return "bad";
@@ -107,11 +139,31 @@ export default function App() {
     }
   }
 
+  function rememberTargetLanguage(value: string) {
+    setTargetLanguage(value);
+    localStorage.setItem("translation_target_language", value);
+  }
+
   function logEvent(message: string) {
     setEvents((current) => {
       const next = [`${new Date().toLocaleTimeString()} ${message}`, ...current];
       return next.slice(0, 18);
     });
+  }
+
+  function appendCaption(delta: string) {
+    if (!delta) return;
+    captionDraftRef.current += delta;
+    setCaptionDraft(captionDraftRef.current.trimStart());
+  }
+
+  function finalizeCaption(transcript?: string) {
+    const nextLine = (transcript || captionDraftRef.current).trim();
+    captionDraftRef.current = "";
+    setCaptionDraft("");
+    if (!nextLine) return;
+
+    setCaptionLines((current) => [...current, nextLine].slice(-3));
   }
 
   function markFirstAudio() {
@@ -150,7 +202,7 @@ export default function App() {
     const response = await fetch("/session", {
       method: "POST",
       headers,
-      body: JSON.stringify({ targetLanguage: "en" }),
+      body: JSON.stringify({ targetLanguage }),
     });
 
     const text = await response.text();
@@ -234,12 +286,17 @@ export default function App() {
         if (debug) logEvent(event.type ?? "event");
 
         if (event.type === "session.output_transcript.delta") {
+          appendCaption(event.delta ?? "");
           setStatus("Translating");
           setTimings((current) => ({
             ...current,
             firstTranscriptMs:
               current.firstTranscriptMs ?? nowMs() - startedAtRef.current,
           }));
+        }
+
+        if (event.type === "session.output_transcript.done") {
+          finalizeCaption(event.transcript);
         }
 
         if (
@@ -300,6 +357,9 @@ export default function App() {
     reconnectStartedAtRef.current = null;
     setTimings({});
     setEvents([]);
+    captionDraftRef.current = "";
+    setCaptionDraft("");
+    setCaptionLines([]);
     setError("");
     setStatus("Connecting");
 
@@ -383,7 +443,7 @@ export default function App() {
       <section className="translation-panel" aria-label="Live translation">
         <div className="top-row">
           <div>
-            <p className="eyebrow">Chinese to English</p>
+            <p className="eyebrow">Chinese to {targetLanguageLabel}</p>
             <h1>Live Translation</h1>
           </div>
           <span className={`status-pill ${statusTone}`}>{status}</span>
@@ -401,6 +461,32 @@ export default function App() {
             />
           </label>
         )}
+
+        <div className="session-options" aria-label="Translation options">
+          <label className="select-control">
+            <span>Translate into</span>
+            <select
+              value={targetLanguage}
+              disabled={active}
+              onChange={(event) => rememberTargetLanguage(event.target.value)}
+            >
+              {TARGET_LANGUAGES.map((language) => (
+                <option key={language.code} value={language.code}>
+                  {language.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="toggle-control captions-toggle">
+            <input
+              type="checkbox"
+              checked={captionsEnabled}
+              onChange={(event) => setCaptionsEnabled(event.target.checked)}
+            />
+            <span>Captions</span>
+          </label>
+        </div>
 
         <button
           className={`start-button ${active ? "active" : ""}`}
@@ -422,6 +508,27 @@ export default function App() {
                     ? "Translating"
                     : "Listening")}
         </p>
+
+        {captionsEnabled && (
+          <div className="captions-panel" aria-live="polite">
+            {visibleCaptions.length ? (
+              visibleCaptions.map((line, index) => (
+                <p
+                  className={
+                    index === visibleCaptions.length - 1
+                      ? "caption-line active"
+                      : "caption-line"
+                  }
+                  key={`${line}-${index}`}
+                >
+                  {line}
+                </p>
+              ))
+            ) : (
+              <p className="caption-placeholder">Captions will appear here</p>
+            )}
+          </div>
+        )}
 
         <div className="controls" aria-label="Audio controls">
           <label className="range-control">

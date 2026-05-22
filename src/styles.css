@@ -26,7 +26,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -115,12 +116,20 @@ h1 {
 }
 
 .field,
+.select-control,
 .range-control {
   display: grid;
   gap: 8px;
   color: #c8d4dc;
   font-size: 0.9rem;
   font-weight: 650;
+}
+
+.session-options {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 14px;
 }
 
 .field input {
@@ -134,7 +143,23 @@ h1 {
   outline: none;
 }
 
-.field input:focus {
+.select-control select {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 0 42px 0 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  outline: none;
+}
+
+.select-control select:disabled {
+  opacity: 0.62;
+}
+
+.field input:focus,
+.select-control select:focus {
   border-color: #8ed8c4;
 }
 
@@ -170,6 +195,40 @@ h1 {
   color: #dce7ed;
   font-size: 1rem;
   line-height: 1.35;
+}
+
+.captions-panel {
+  min-height: 118px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.26);
+}
+
+.caption-line,
+.caption-placeholder {
+  margin: 0;
+  color: #dce7ed;
+  font-size: clamp(1.08rem, 5vw, 1.55rem);
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.caption-line {
+  opacity: 0.62;
+}
+
+.caption-line.active {
+  color: #fff8df;
+  opacity: 1;
+}
+
+.caption-placeholder {
+  color: #91a1ad;
 }
 
 .controls {
@@ -251,6 +310,14 @@ h1 {
 
   .controls {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .session-options {
+    grid-template-columns: 1fr;
+  }
+
+  .captions-toggle {
+    width: 100%;
   }
 
   .range-control {
