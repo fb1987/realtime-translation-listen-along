@@ -10,7 +10,7 @@ Private mobile web app for one-way Chinese-to-English live audio translation wit
 - Plays translated English audio through the browser audio route, including Bluetooth headphones selected at the OS level.
 - Lets the listener choose the target output language, with English as the default.
 - Can show translated captions from the Realtime Translation transcript deltas.
-- Provides Close/Room mic modes plus input gain boost for harder room pickup.
+- Uses room-oriented mic capture with 2x input gain for harder room pickup.
 - Keeps the OpenAI API key server-side only.
 - Tracks connection and first-audio timing in debug mode.
 

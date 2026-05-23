@@ -27,10 +27,11 @@ type ConfigResponse = {
   authRequired: boolean;
 };
 
-type MicMode = "close" | "room";
-
 const TRANSLATION_CALL_URL =
   "https://api.openai.com/v1/realtime/translations/calls";
+
+const MIC_MODE = "room";
+const INPUT_BOOST = 2;
 
 const TARGET_LANGUAGES = [
   { code: "en", label: "English" },
@@ -46,11 +47,6 @@ const TARGET_LANGUAGES = [
   { code: "id", label: "Indonesian" },
   { code: "vi", label: "Vietnamese" },
   { code: "it", label: "Italian" },
-];
-
-const MIC_MODES: Array<{ value: MicMode; label: string }> = [
-  { value: "close", label: "Close" },
-  { value: "room", label: "Room" },
 ];
 
 function nowMs() {
@@ -74,18 +70,6 @@ function readStoredTargetLanguage() {
     : "en";
 }
 
-function readStoredMicMode(): MicMode {
-  return localStorage.getItem("translation_mic_mode") === "room"
-    ? "room"
-    : "close";
-}
-
-function readStoredInputBoost() {
-  const stored = Number(localStorage.getItem("translation_input_boost"));
-  if (!Number.isFinite(stored)) return 1;
-  return Math.min(Math.max(stored, 1), 3);
-}
-
 export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
@@ -107,8 +91,6 @@ export default function App() {
   const [debug, setDebug] = useState(false);
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState(readStoredTargetLanguage);
-  const [micMode, setMicMode] = useState<MicMode>(readStoredMicMode);
-  const [inputBoost, setInputBoost] = useState(readStoredInputBoost);
   const [captionDraft, setCaptionDraft] = useState("");
   const [captionLines, setCaptionLines] = useState<string[]>([]);
   const [timings, setTimings] = useState<Timings>({});
@@ -118,9 +100,6 @@ export default function App() {
   const [languageFilterMode, setLanguageFilterMode] = useState<string>("");
 
   const active = status !== "Idle" && status !== "Error";
-  const targetLanguageLabel =
-    TARGET_LANGUAGES.find((language) => language.code === targetLanguage)?.label ??
-    "English";
   const visibleCaptions = [...captionLines, captionDraft].filter(Boolean);
 
   const statusTone = useMemo(() => {
@@ -167,16 +146,6 @@ export default function App() {
     localStorage.setItem("translation_target_language", value);
   }
 
-  function rememberMicMode(value: MicMode) {
-    setMicMode(value);
-    localStorage.setItem("translation_mic_mode", value);
-  }
-
-  function rememberInputBoost(value: number) {
-    setInputBoost(value);
-    localStorage.setItem("translation_input_boost", String(value));
-  }
-
   function logEvent(message: string) {
     setEvents((current) => {
       const next = [`${new Date().toLocaleTimeString()} ${message}`, ...current];
@@ -211,22 +180,16 @@ export default function App() {
   }
 
   async function requestMicrophone() {
-    const roomMode = micMode === "room";
     const rawStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
-        autoGainControl: roomMode,
+        autoGainControl: true,
       },
       video: false,
     });
 
     rawMicrophoneRef.current = rawStream;
-
-    if (inputBoost <= 1.01) {
-      microphoneRef.current = rawStream;
-      return rawStream;
-    }
 
     const AudioContextCtor =
       window.AudioContext ||
@@ -244,7 +207,7 @@ export default function App() {
     const gain = context.createGain();
     const destination = context.createMediaStreamDestination();
 
-    gain.gain.value = inputBoost;
+    gain.gain.value = INPUT_BOOST;
     source.connect(gain);
     gain.connect(destination);
     inputAudioContextRef.current = context;
@@ -265,7 +228,7 @@ export default function App() {
     const response = await fetch("/session", {
       method: "POST",
       headers,
-      body: JSON.stringify({ targetLanguage, micMode }),
+      body: JSON.stringify({ targetLanguage, micMode: MIC_MODE }),
     });
 
     const text = await response.text();
@@ -514,10 +477,8 @@ export default function App() {
       <section className="translation-panel" aria-label="Live translation">
         <div className="top-row">
           <div>
-            <p className="eyebrow">Chinese to {targetLanguageLabel}</p>
             <h1>Live Translation</h1>
           </div>
-          <span className={`status-pill ${statusTone}`}>{status}</span>
         </div>
 
         {authRequired && (
@@ -559,33 +520,8 @@ export default function App() {
           </label>
         </div>
 
-        <div className="input-options" aria-label="Microphone input options">
-          <div className="segmented-control" aria-label="Microphone mode">
-            {MIC_MODES.map((mode) => (
-              <button
-                className={micMode === mode.value ? "selected" : ""}
-                disabled={active}
-                key={mode.value}
-                type="button"
-                onClick={() => rememberMicMode(mode.value)}
-              >
-                {mode.label}
-              </button>
-            ))}
-          </div>
-
-          <label className="range-control boost-control">
-            <span>Input boost {inputBoost.toFixed(1)}x</span>
-            <input
-              type="range"
-              min="1"
-              max="3"
-              step="0.1"
-              value={inputBoost}
-              disabled={active}
-              onChange={(event) => rememberInputBoost(Number(event.target.value))}
-            />
-          </label>
+        <div className="status-row" aria-live="polite">
+          <span className={`status-pill ${statusTone}`}>{status}</span>
         </div>
 
         <button
@@ -596,18 +532,7 @@ export default function App() {
           {active ? "Stop Translation" : "Start Translation"}
         </button>
 
-        <p className="status-line">
-          {error ||
-            (status === "Idle"
-              ? "Idle"
-              : status === "Connecting"
-                ? "Connecting microphone and translation session"
-                : status === "Reconnecting"
-                  ? "Reconnecting translation audio"
-                  : status === "Translating"
-                    ? "Translating"
-                    : "Listening")}
-        </p>
+        {error && <p className="status-line">{error}</p>}
 
         {captionsEnabled && (
           <div className="captions-panel" aria-live="polite">
