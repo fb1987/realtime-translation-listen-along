@@ -27,6 +27,8 @@ type ConfigResponse = {
   authRequired: boolean;
 };
 
+type MicMode = "close" | "room";
+
 const TRANSLATION_CALL_URL =
   "https://api.openai.com/v1/realtime/translations/calls";
 
@@ -44,6 +46,11 @@ const TARGET_LANGUAGES = [
   { code: "id", label: "Indonesian" },
   { code: "vi", label: "Vietnamese" },
   { code: "it", label: "Italian" },
+];
+
+const MIC_MODES: Array<{ value: MicMode; label: string }> = [
+  { value: "close", label: "Close" },
+  { value: "room", label: "Room" },
 ];
 
 function nowMs() {
@@ -67,11 +74,25 @@ function readStoredTargetLanguage() {
     : "en";
 }
 
+function readStoredMicMode(): MicMode {
+  return localStorage.getItem("translation_mic_mode") === "room"
+    ? "room"
+    : "close";
+}
+
+function readStoredInputBoost() {
+  const stored = Number(localStorage.getItem("translation_input_boost"));
+  if (!Number.isFinite(stored)) return 1;
+  return Math.min(Math.max(stored, 1), 3);
+}
+
 export default function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const microphoneRef = useRef<MediaStream | null>(null);
+  const rawMicrophoneRef = useRef<MediaStream | null>(null);
+  const inputAudioContextRef = useRef<AudioContext | null>(null);
   const startedAtRef = useRef(0);
   const reconnectStartedAtRef = useRef<number | null>(null);
   const firstAudioSeenRef = useRef(false);
@@ -86,6 +107,8 @@ export default function App() {
   const [debug, setDebug] = useState(false);
   const [captionsEnabled, setCaptionsEnabled] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState(readStoredTargetLanguage);
+  const [micMode, setMicMode] = useState<MicMode>(readStoredMicMode);
+  const [inputBoost, setInputBoost] = useState(readStoredInputBoost);
   const [captionDraft, setCaptionDraft] = useState("");
   const [captionLines, setCaptionLines] = useState<string[]>([]);
   const [timings, setTimings] = useState<Timings>({});
@@ -144,6 +167,16 @@ export default function App() {
     localStorage.setItem("translation_target_language", value);
   }
 
+  function rememberMicMode(value: MicMode) {
+    setMicMode(value);
+    localStorage.setItem("translation_mic_mode", value);
+  }
+
+  function rememberInputBoost(value: number) {
+    setInputBoost(value);
+    localStorage.setItem("translation_input_boost", String(value));
+  }
+
   function logEvent(message: string) {
     setEvents((current) => {
       const next = [`${new Date().toLocaleTimeString()} ${message}`, ...current];
@@ -178,16 +211,46 @@ export default function App() {
   }
 
   async function requestMicrophone() {
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const roomMode = micMode === "room";
+    const rawStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: false,
         noiseSuppression: false,
-        autoGainControl: false,
+        autoGainControl: roomMode,
       },
       video: false,
     });
-    microphoneRef.current = stream;
-    return stream;
+
+    rawMicrophoneRef.current = rawStream;
+
+    if (inputBoost <= 1.01) {
+      microphoneRef.current = rawStream;
+      return rawStream;
+    }
+
+    const AudioContextCtor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+
+    if (!AudioContextCtor) {
+      logEvent("input boost unavailable");
+      microphoneRef.current = rawStream;
+      return rawStream;
+    }
+
+    const context = new AudioContextCtor({ latencyHint: "interactive" });
+    const source = context.createMediaStreamSource(rawStream);
+    const gain = context.createGain();
+    const destination = context.createMediaStreamDestination();
+
+    gain.gain.value = inputBoost;
+    source.connect(gain);
+    gain.connect(destination);
+    inputAudioContextRef.current = context;
+    microphoneRef.current = destination.stream;
+
+    return destination.stream;
   }
 
   async function createClientSecret() {
@@ -202,7 +265,7 @@ export default function App() {
     const response = await fetch("/session", {
       method: "POST",
       headers,
-      body: JSON.stringify({ targetLanguage }),
+      body: JSON.stringify({ targetLanguage, micMode }),
     });
 
     const text = await response.text();
@@ -405,13 +468,22 @@ export default function App() {
     }
   }
 
+  function stopMicrophone() {
+    microphoneRef.current?.getTracks().forEach((track) => track.stop());
+    microphoneRef.current = null;
+
+    rawMicrophoneRef.current?.getTracks().forEach((track) => track.stop());
+    rawMicrophoneRef.current = null;
+
+    inputAudioContextRef.current?.close().catch(() => {});
+    inputAudioContextRef.current = null;
+  }
+
   function stop() {
     stopRequestedRef.current = true;
     reconnectingRef.current = false;
     teardownPeerOnly();
-
-    microphoneRef.current?.getTracks().forEach((track) => track.stop());
-    microphoneRef.current = null;
+    stopMicrophone();
 
     setStatus("Idle");
     setError("");
@@ -424,8 +496,7 @@ export default function App() {
     stopRequestedRef.current = true;
     reconnectingRef.current = false;
     teardownPeerOnly();
-    microphoneRef.current?.getTracks().forEach((track) => track.stop());
-    microphoneRef.current = null;
+    stopMicrophone();
     setError(message);
     setStatus("Error");
   }
@@ -485,6 +556,35 @@ export default function App() {
               onChange={(event) => setCaptionsEnabled(event.target.checked)}
             />
             <span>Captions</span>
+          </label>
+        </div>
+
+        <div className="input-options" aria-label="Microphone input options">
+          <div className="segmented-control" aria-label="Microphone mode">
+            {MIC_MODES.map((mode) => (
+              <button
+                className={micMode === mode.value ? "selected" : ""}
+                disabled={active}
+                key={mode.value}
+                type="button"
+                onClick={() => rememberMicMode(mode.value)}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+
+          <label className="range-control boost-control">
+            <span>Input boost {inputBoost.toFixed(1)}x</span>
+            <input
+              type="range"
+              min="1"
+              max="3"
+              step="0.1"
+              value={inputBoost}
+              disabled={active}
+              onChange={(event) => rememberInputBoost(Number(event.target.value))}
+            />
           </label>
         </div>
 

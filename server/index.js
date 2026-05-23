@@ -28,6 +28,8 @@ const SUPPORTED_TARGET_LANGUAGES = new Map([
   ["it", "Italian"],
 ]);
 
+const SUPPORTED_MIC_MODES = new Set(["close", "room"]);
+
 function buildChineseOnlyInstructions(targetLabel) {
   return `Only translate Mandarin or Cantonese Chinese into ${targetLabel}. If the detected speech is already English or not Chinese, return silence / no translated audio.`;
 }
@@ -56,8 +58,13 @@ function requireAppSecret(req, res, next) {
   res.status(401).json({ error: "Unauthorized" });
 }
 
-function buildTranslationSession({ targetLanguage, withInstructions = true }) {
+function buildTranslationSession({
+  targetLanguage,
+  micMode,
+  withInstructions = true,
+}) {
   const targetLabel = SUPPORTED_TARGET_LANGUAGES.get(targetLanguage);
+  const noiseReductionType = micMode === "room" ? "far_field" : "near_field";
 
   return {
     session: {
@@ -67,7 +74,7 @@ function buildTranslationSession({ targetLanguage, withInstructions = true }) {
         : {}),
       audio: {
         input: {
-          noise_reduction: { type: "near_field" },
+          noise_reduction: { type: noiseReductionType },
         },
         output: { language: targetLanguage },
       },
@@ -90,7 +97,7 @@ function parseOpenAISecret(data) {
   };
 }
 
-async function createTranslationSecret({ targetLanguage, withInstructions }) {
+async function createTranslationSecret({ targetLanguage, micMode, withInstructions }) {
   if (!process.env.OPENAI_API_KEY) {
     return {
       ok: false,
@@ -108,7 +115,9 @@ async function createTranslationSecret({ targetLanguage, withInstructions }) {
         ? { "OpenAI-Safety-Identifier": process.env.OPENAI_SAFETY_IDENTIFIER }
         : {}),
     },
-    body: JSON.stringify(buildTranslationSession({ targetLanguage, withInstructions })),
+    body: JSON.stringify(
+      buildTranslationSession({ targetLanguage, micMode, withInstructions }),
+    ),
   });
 
   const text = await response.text();
@@ -133,6 +142,7 @@ app.post("/session", requireAppSecret, async (req, res) => {
   try {
     const targetLanguage =
       typeof req.body?.targetLanguage === "string" ? req.body.targetLanguage : "en";
+    const micMode = typeof req.body?.micMode === "string" ? req.body.micMode : "close";
 
     if (!SUPPORTED_TARGET_LANGUAGES.has(targetLanguage)) {
       res.status(400).json({
@@ -142,9 +152,18 @@ app.post("/session", requireAppSecret, async (req, res) => {
       return;
     }
 
+    if (!SUPPORTED_MIC_MODES.has(micMode)) {
+      res.status(400).json({
+        error: `Unsupported mic mode: ${micMode}`,
+        supported_mic_modes: Array.from(SUPPORTED_MIC_MODES),
+      });
+      return;
+    }
+
     let languageFilterMode = "session_instructions";
     let openAIResponse = await createTranslationSecret({
       targetLanguage,
+      micMode,
       withInstructions: true,
     });
 
@@ -155,6 +174,7 @@ app.post("/session", requireAppSecret, async (req, res) => {
       languageFilterMode = "todo_language_detection_gate";
       openAIResponse = await createTranslationSecret({
         targetLanguage,
+        micMode,
         withInstructions: false,
       });
     }
@@ -169,6 +189,7 @@ app.post("/session", requireAppSecret, async (req, res) => {
       ...parseOpenAISecret(data),
       language_filter_mode: languageFilterMode,
       target_language: targetLanguage,
+      mic_mode: micMode,
     });
   } catch (error) {
     console.error("Failed to create translation session", error);
